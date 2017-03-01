@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
-	"net/http"
+	"io"
 	"time"
+
+	"bytes"
+
+	"encoding/json"
 
 	"github.com/google/go-github/github"
 )
@@ -45,41 +49,22 @@ func repoHandler(ctx context.Context, repo string) handler {
 			return
 		}
 
-		commits := []*github.RepositoryCommit{}
-		opt := &github.CommitsListOptions{
-			ListOptions: github.ListOptions{
-				PerPage: 100,
-			},
+		commits, err := client.Commits(timeout, repo, since)
+		if err != nil {
+			logger.Error("err", err.Error())
+			return
 		}
 
-		if since != nil {
-			opt.Since = *since
+		lines, err := commitsToLines(commits)
+		if err != nil {
+			logger.Error("err", err.Error())
+			return
 		}
 
-		for {
-			r, resp, err := client.Repositories.ListCommits(timeout, *orgName, repo, opt)
-			if err != nil {
-				if resp.StatusCode == http.StatusConflict {
-					err = updateConsul(ctx, repo, now)
-					if err != nil {
-						logger.Error("err", err.Error())
-						return
-					}
-
-					return
-				}
-
-				logger.Error("err", err.Error())
-				return
-			}
-
-			commits = append(commits, r...)
-
-			if resp.NextPage == 0 {
-				break
-			}
-
-			opt.ListOptions.Page = resp.NextPage
+		err = storage.Append("/commits/"+repo+".log", lines)
+		if err != nil {
+			logger.Error("err", err.Error())
+			return
 		}
 
 		err = updateConsul(ctx, repo, now)
@@ -90,4 +75,20 @@ func repoHandler(ctx context.Context, repo string) handler {
 
 		logger.Infof("Repo %s has %d commits!", repo, len(commits))
 	}
+}
+
+func commitsToLines(commits []*github.RepositoryCommit) (io.Reader, error) {
+	buf := &bytes.Buffer{}
+	for _, v := range commits {
+		commit := v
+		j, err := json.Marshal(commit)
+		if err != nil {
+			return nil, err
+		}
+
+		buf.Write(j)
+		buf.WriteByte('\n')
+	}
+
+	return buf, nil
 }

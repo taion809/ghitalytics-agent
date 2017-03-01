@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -28,9 +29,6 @@ func NewDefaultGithubApi(ctx context.Context, orgName, accessToken string) *Gith
 }
 
 func (g *GithubApi) ListRepositories(ctx context.Context) ([]string, error) {
-	timeout, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
 	repos := []string{}
 	opt := &github.RepositoryListByOrgOptions{
 		Type: "sources",
@@ -40,8 +38,12 @@ func (g *GithubApi) ListRepositories(ctx context.Context) ([]string, error) {
 	}
 
 	for {
-		r, resp, err := g.client.Repositories.ListByOrg(timeout, g.organization, opt)
+		r, resp, err := g.client.Repositories.ListByOrg(ctx, g.organization, opt)
 		if err != nil {
+			if resp.StatusCode == http.StatusConflict {
+				return repos, nil
+			}
+
 			return repos, err
 		}
 
@@ -57,4 +59,38 @@ func (g *GithubApi) ListRepositories(ctx context.Context) ([]string, error) {
 	}
 
 	return repos, nil
+}
+
+func (g *GithubApi) Commits(ctx context.Context, repo string, since *time.Time) ([]*github.RepositoryCommit, error) {
+	commits := []*github.RepositoryCommit{}
+	opt := &github.CommitsListOptions{
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	}
+
+	if since != nil {
+		opt.Since = *since
+	}
+
+	for {
+		r, resp, err := g.client.Repositories.ListCommits(ctx, g.organization, repo, opt)
+		if err != nil {
+			if resp.StatusCode == http.StatusConflict {
+				return commits, nil
+			}
+
+			return commits, err
+		}
+
+		commits = append(commits, r...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+
+		opt.ListOptions.Page = resp.NextPage
+	}
+
+	return commits, nil
 }
